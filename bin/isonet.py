@@ -336,7 +336,12 @@ class ISONET:
         normalize_percentile: bool = True,
 
         prefill: bool = False,
-        low_mem: bool = False
+        low_mem: bool = False,
+
+        use_wandb: bool = True,
+        wandb_project: str = None,
+        wandb_run_name: str = None,
+        wandb_entity: str = None
 
     ):
         """
@@ -370,6 +375,13 @@ class ISONET:
         :param arch: ("unet") Network architecture
         :param learning_rate: (0.0004) learning rate for network training.
         :param normalize_percentile: (True) Normalize the 5 percent and 95 percent pixel intensity to 0 and 1 respectively. If this is set to False, normalize the input to 0 mean and 1 standard dievation.
+
+        ************************Experiment tracking************************
+
+        :param use_wandb: (True) Enable logging to Weights & Biases during refinement.
+        :param wandb_project: (None) Override the wandb project name; defaults to "isonet" when not provided.
+        :param wandb_run_name: (None) Optional custom run name shown in the wandb UI.
+        :param wandb_entity: (None) Optional wandb entity (team/user) to log the run under.
         """
         from IsoNet.bin.refine import run
         d = locals()

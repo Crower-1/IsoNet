@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime
 from re import I
 from IsoNet.preprocessing.prepare import get_cubes_list,get_noise_level, prepare_first_iter
 from IsoNet.util.dict2attr import save_args_json,load_args_from_json
@@ -18,6 +19,9 @@ def run(args):
         datefmt="%m-%d %H:%M:%S",level=logging.INFO,handlers=[logging.StreamHandler(sys.stdout)])
         #logging.basicConfig(format='%(asctime)s.%(msecs)03d, %(levelname)-8s %(message)s',
         #datefmt="%Y-%m-%d,%H:%M:%S",level=logging.INFO,handlers=[logging.StreamHandler(sys.stdout)])
+    wandb_run = None
+    wandb_module = None
+    wandb_epoch_offset = 0
     try:
 
         logging.info('\n######Isonet starts refining######\n')
@@ -29,6 +33,15 @@ def run(args):
                 if args_continue.__dict__[item] is not None and (args.__dict__ is None or not hasattr(args, item)):
                     args.__dict__[item] = args_continue.__dict__[item]
         args = run_whole(args)
+
+        if getattr(args, "use_wandb", False):
+            try:
+                import wandb
+            except ImportError as exc:
+                logging.error("wandb is not installed. Install it with 'pip install wandb' or disable --use_wandb.")
+                raise
+            wandb_module = wandb
+            wandb_run = _init_wandb_run(wandb_module, args)
 
         #environment
         os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"
@@ -69,7 +82,7 @@ def run(args):
 
             ### Update the iteration count ###
             args.iter_count = num_iter
-            args.model_file = "{}/model_iter{:0>2d}.h5".format(args.result_dir, num_iter-1)
+            args.model_file = "{}/model_iter{:0>2d}.pth".format(args.result_dir, num_iter-1)
 
             if num_iter == 1 and args.pretrained_model is None:
             ### First iteration ###
@@ -136,20 +149,38 @@ def run(args):
             # try:
             metrics = network.train(args.data_dir,gpuID=args.gpuID, 
                             learning_rate=args.learning_rate, batch_size=args.batch_size,
-                            epochs = args.epochs,steps_per_epoch=args.steps_per_epoch,acc_grad=args.low_mem) #train based on init model and save new one as model_iter{num_iter}.h5
+                            epochs = args.epochs,steps_per_epoch=args.steps_per_epoch,acc_grad=args.low_mem) # train based on previous checkpoint and save new one as model_iterXX.pth
             # except KeyboardInterrupt as exception: 
             #     sys.exit("Keyboard interrupt")
             args.metrics = metrics
+
+            if wandb_run is not None:
+                wandb_epoch_offset = _log_wandb_epoch_metrics(
+                    wandb_module,
+                    wandb_run,
+                    metrics,
+                    wandb_epoch_offset,
+                    args,
+                    num_iter,
+                )
  
             model_basename = 'model_iter{:0>2d}'.format(args.iter_count)
-            h5_path = '{}/{}.h5'.format(args.result_dir, model_basename)
             pth_path = '{}/{}.pth'.format(args.result_dir, model_basename)
-            network.save(h5_path)
             network.save(pth_path)
 
             save_args_json(args,args.result_dir+'/refine_iter{:0>2d}.json'.format(num_iter))
             from IsoNet.util.plot_metrics import plot_metrics
             plot_metrics(metrics, args.result_dir+"/losses.png")
+
+            if wandb_run is not None:
+                _log_wandb_artifacts(
+                    wandb_module,
+                    wandb_run,
+                    iteration=num_iter,
+                    model_paths=[pth_path],
+                    metrics_image=os.path.join(args.result_dir, "losses.png"),
+                    step=wandb_epoch_offset,
+                )
             logging.info("Done training!")
 
             ### for last iteration predict subtomograms ###
@@ -169,6 +200,11 @@ def run(args):
         f.close()
         logging.error(error_text)
         #logging.error(exc_value)
+        if wandb_module is not None:
+            wandb_module.alert(title="IsoNet refine failed", text=error_text[-512:])
+    finally:
+        if wandb_run is not None:
+            wandb_run.finish()
 
 
 def run_whole(args):
@@ -238,3 +274,77 @@ def check_gpu(args):
     out_str = out_str[0].decode('utf-8')
     if 'CUDA Version' not in out_str:
         raise RuntimeError('No GPU detected, Please check your CUDA version and installation')
+
+
+def _init_wandb_run(wandb_module, args):
+    project = args.wandb_project or "isonet"
+    run_name = args.wandb_run_name or f"refine-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    init_kwargs = {
+        "project": project,
+        "name": run_name,
+        "reinit": True,
+        "config": _build_wandb_config(args),
+    }
+    if getattr(args, "wandb_entity", None):
+        init_kwargs["entity"] = args.wandb_entity
+    return wandb_module.init(**init_kwargs)
+
+
+def _build_wandb_config(args):
+    config = {}
+    for key, value in vars(args).items():
+        if key.startswith('_'):
+            continue
+        config[key] = _serialize_for_wandb(value)
+    return config
+
+
+def _serialize_for_wandb(value):
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, dict):
+        return {str(k): _serialize_for_wandb(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_serialize_for_wandb(v) for v in value]
+    try:
+        return value.tolist()  # handle numpy arrays
+    except AttributeError:
+        return str(value)
+
+
+def _log_wandb_epoch_metrics(wandb_module, wandb_run, metrics, previous_count, args, iteration):
+    train_losses = metrics.get('train_loss', []) or []
+    val_losses = metrics.get('val_loss', []) or []
+    total_epochs = len(train_losses)
+
+    for idx in range(previous_count, total_epochs):
+        payload = {
+            'iteration': iteration,
+            'epoch_in_iteration': idx - previous_count + 1,
+            'global_epoch': idx + 1,
+            'train_loss': train_losses[idx],
+        }
+        if idx < len(val_losses):
+            payload['val_loss'] = val_losses[idx]
+        if hasattr(args, 'noise_level_current'):
+            payload['noise_level'] = args.noise_level_current
+        wandb_run.log(payload, step=idx + 1)
+
+    return total_epochs
+
+
+def _log_wandb_artifacts(wandb_module, wandb_run, iteration, model_paths, metrics_image=None, step=None):
+    artifact_name = f"isonet-iter-{iteration:02d}"
+    artifact = wandb_module.Artifact(artifact_name, type="model", metadata={'iteration': iteration})
+    for path in model_paths:
+        if path and os.path.exists(path):
+            artifact.add_file(path)
+    wandb_run.log_artifact(artifact)
+
+    if metrics_image and os.path.exists(metrics_image):
+        log_kwargs = {}
+        if step is not None:
+            log_kwargs['step'] = step
+        wandb_run.log({'loss_curve': wandb_module.Image(metrics_image)}, **log_kwargs)
