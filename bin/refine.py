@@ -141,7 +141,11 @@ def run(args):
             #     sys.exit("Keyboard interrupt")
             args.metrics = metrics
  
-            network.save('{}/model_iter{:0>2d}.h5'.format(args.result_dir, args.iter_count))
+            model_basename = 'model_iter{:0>2d}'.format(args.iter_count)
+            h5_path = '{}/{}.h5'.format(args.result_dir, model_basename)
+            pth_path = '{}/{}.pth'.format(args.result_dir, model_basename)
+            network.save(h5_path)
+            network.save(pth_path)
 
             save_args_json(args,args.result_dir+'/refine_iter{:0>2d}.json'.format(num_iter))
             from IsoNet.util.plot_metrics import plot_metrics

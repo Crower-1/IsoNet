@@ -1,9 +1,10 @@
 from typing import List
 import torch
 import torch.nn as nn
-import pytorch_lightning as pl
 import logging
-class ConvBlock(pl.LightningModule):
+
+
+class ConvBlock(nn.Module):
     # conv_per_depth fixed to 2
     def __init__(self, in_channels, out_channels, n_conv, kernel_size =3, stride=1, padding=1):
         super(ConvBlock, self).__init__()
@@ -26,7 +27,7 @@ class ConvBlock(pl.LightningModule):
     def forward(self, x):
         return self.net(x)
 
-class EncoderBlock(pl.LightningModule):
+class EncoderBlock(nn.Module):
     def __init__(self, filter_base, unet_depth, n_conv):
         super(EncoderBlock, self).__init__()
         self.module_dict = nn.ModuleDict()
@@ -46,7 +47,7 @@ class EncoderBlock(pl.LightningModule):
                 down_sampling_features.append(x)
         return x, down_sampling_features
 
-class DecoderBlock(pl.LightningModule):
+class DecoderBlock(nn.Module):
     def __init__(self, filter_base, unet_depth, n_conv):
         super(DecoderBlock, self).__init__()
         self.module_dict = nn.ModuleDict()
@@ -67,7 +68,7 @@ class DecoderBlock(pl.LightningModule):
                 x = torch.cat((down_sampling_features[int(k[-1])], x), dim=1)
         return x
 
-class Unet(pl.LightningModule):
+class Unet(nn.Module):
     def __init__(self,metrics=None):
         super(Unet, self).__init__()
         filter_base = [64,128,256,320,320,320]
@@ -91,36 +92,3 @@ class Unet(pl.LightningModule):
         x = self.decoder(x, down_sampling_features)
         y_hat = self.final(x)
         return y_hat
-    
-    def training_step(self, batch, batch_idx):
-        x, y = batch
-        out = self(x)
-        loss = nn.L1Loss()(out, y)
-        return loss
-    
-    def configure_optimizers(self):
-        optimizer = torch.optim.AdamW(self.parameters(), lr=self.learning_rate)
-        return optimizer 
-
-    def validation_step(self, batch, batch_idx):
-        with torch.no_grad():
-            x, y = batch
-            out = self(x)
-            loss = nn.L1Loss()(out, y)
-            return loss
-
-    def training_epoch_end(self, outputs):
-        
-        loss = torch.stack([x['loss'] for x in outputs]).mean().item()
-        #print(outputs)
-        #print(loss)
-        self.metrics["train_loss"].append(loss)
-        #self.log("train_loss", loss, logger=True,on_epoch=True)
-
-
-    def validation_epoch_end(self, outputs):
-        loss = torch.stack(outputs).mean().item()
-        self.metrics["val_loss"].append(loss)
-        self.log("val_loss", loss, prog_bar=True,on_epoch=True)
-    
-        

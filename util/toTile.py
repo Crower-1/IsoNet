@@ -9,7 +9,7 @@ class reform3D:
         self._cropsize = cropsize
         sp = np.array(self._sp)
         self._sidelen = sp//cubesize+1
-        padi = np.int((cropsize - cubesize)/2)
+        padi = int((cropsize - cubesize)/2)
         padsize = (self._sidelen*cubesize + padi - sp).astype(int)
         data = np.pad(self._orig_data,((padi,padsize[0]),(padi,padsize[1]),(padi,padsize[2]),(0,0)),'symmetric')
         outdata=[]
@@ -59,8 +59,8 @@ class reform3D:
             cubes = cubes.reshape(cubes.shape[0:-1])
 
         new = np.zeros((self._sidelen[0]*cubesize,self._sidelen[1]*cubesize,self._sidelen[2]*cubesize))
-        start=int((cropsize-cubesize)/2)
-        end=int((cropsize+cubesize)/2)
+        start = int((cropsize - cubesize) / 2)
+        end = int((cropsize + cubesize) / 2)
         
         for i in range(self._sidelen[0]):
             for j in range(self._sidelen[1]):

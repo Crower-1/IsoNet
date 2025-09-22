@@ -19,7 +19,6 @@ setup(name='IsoNet',
     include_package_data = True,
     install_requires=[
         'torch==1.12.1',
-        'pytorch_lightning',
         'mrcfile',
         'matplotlib',
         'fire',
