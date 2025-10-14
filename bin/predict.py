@@ -23,26 +23,35 @@ def predict(args):
         datefmt="%m-%d %H:%M:%S",level=logging.INFO,handlers=[logging.StreamHandler(sys.stdout)])
     logging.info('\n\n######Isonet starts predicting######\n')
 
-    args.gpuID = str(args.gpuID)
-    args.ngpus = len(list(set(args.gpuID.split(','))))
+    backend = getattr(args, "backend", "tensorflow") or "tensorflow"
+    backend = backend.lower()
+    args.backend = backend
+    logging.info("Using prediction backend: %s", backend)
 
-    ### Seperate network with other modules in case we may use pytorch in the future ###
-    if True:
+    if backend == "onnx":
+        args.ngpus = 1
+        if args.batch_size is None:
+            args.batch_size = 1
+        try:
+            from IsoNet.models.unet.predict_onnx import predict_one
+        except ImportError as exc:
+            logging.error("ONNXRuntime backend requested but unavailable: %s", exc)
+            raise
+        logger.info("gpuID settings ignored for ONNX backend")
+    else:
+        args.gpuID = str(args.gpuID)
+        args.ngpus = len(list(set(args.gpuID.split(','))))
+        if args.batch_size is None:
+            args.batch_size = 4 * args.ngpus #max(4, 2 * args.ngpus)
+        os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"
+        os.environ["CUDA_VISIBLE_DEVICES"]=args.gpuID
         from IsoNet.models.unet.predict import predict_one
-
-    if args.batch_size is None:
-        args.batch_size = 4 * args.ngpus #max(4, 2 * args.ngpus)
-    #print('batch_size',args.batch_size)
-    os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"
-    os.environ["CUDA_VISIBLE_DEVICES"]=args.gpuID
-    #check gpu settings
-    from IsoNet.bin.refine import check_gpu
-    check_gpu(args)
+        #check gpu settings
+        from IsoNet.bin.refine import check_gpu
+        check_gpu(args)
+        logger.info('gpuID:{}'.format(args.gpuID))
 
     logger.debug('percentile:{}'.format(args.normalize_percentile))
-
-    logger.info('gpuID:{}'.format(args.gpuID))
-
 
     if not os.path.isdir(args.output_dir):
             os.mkdir(args.output_dir)
@@ -66,4 +75,3 @@ def predict(args):
                 predict_one(args,tomo_file,output_file=tomo_out_name)
                 md._setItemValue(it,Label('rlnCorrectedTomoName'),tomo_out_name)
         md.write(args.star_file)
-

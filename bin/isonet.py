@@ -391,7 +391,8 @@ class ISONET:
         run(d_args)
 
     def predict(self, star_file: str, model: str, output_dir: str='./corrected_tomos', gpuID: str = None, cube_size:int=64,
-    crop_size:int=96,use_deconv_tomo=True, batch_size:int=None,normalize_percentile: bool=True,log_level: str="info", tomo_idx=None):
+    crop_size:int=96,use_deconv_tomo=True, batch_size:int=None,normalize_percentile: bool=True,log_level: str="info", tomo_idx=None,
+    backend: str = "tensorflow", onnx_providers: str = None):
         """
         \nPredict tomograms using trained model\n
         isonet.py predict star_file model [--gpuID] [--output_dir] [--cube_size] [--crop_size] [--batch_size] [--tomo_idx]
@@ -406,6 +407,8 @@ class ISONET:
         :param log_level: ("debug") level of message to be displayed, could be 'info' or 'debug'
         :param tomo_idx: (None) If this value is set, process only the tomograms listed in this index. e.g. 1,2,4 or 5-10,15,16
         :param use_deconv_tomo: (True) If CTF deconvolved tomogram is found in tomogram.star, use that tomogram instead.
+        :param backend: ('tensorflow') Backend to use for prediction. Choose 'onnx' to run with onnxruntime.
+        :param onnx_providers: (None) Optional comma-separated ONNXRuntime provider list, e.g. 'CUDAExecutionProvider,CPUExecutionProvider'.
         :raises: AttributeError, KeyError
         """
         d = locals()

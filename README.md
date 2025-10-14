@@ -50,6 +50,22 @@ isonet.py check
 
 Tutorial data set and tutorial videos are on google drive https://drive.google.com/drive/folders/1DXjIsz6-EiQm7mBMuMHHwdZErZ_bXAgp
 
+## ONNX Export and Inference (experimental)
+You can now run IsoNet prediction without TensorFlow by converting trained models to ONNX and using `onnxruntime`.
+
+1. Export the trained TensorFlow model:
+   ```
+   python bin/export_onnx.py --model /path/to/model.h5 --output /path/to/model.onnx --opset 13
+   ```
+   Install missing dependencies if prompted: `pip install tensorflow tf2onnx`.
+2. Run prediction with the ONNX backend:
+   ```
+   isonet.py predict tomograms.star /path/to/model.onnx --backend onnx --output_dir corrected_tomos
+   ```
+   Use `--onnx_providers CUDAExecutionProvider,CPUExecutionProvider` to pick specific ONNXRuntime providers; defaults follow the runtime availability.
+
+The ONNX path reuses the existing preprocessing pipeline and writes `*_corrected.mrc` volumes identical to the TensorFlow workflow.
+
 # FAQ:
 ## 1. IsoNet refine raise OOM error.
 
