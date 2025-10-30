@@ -3,6 +3,7 @@ from .nnUNet import NNUNet
 import torch
 import torch.nn.functional as F
 import os
+import re
 from .data_sequence import get_datasets, Predict_sets
 import mrcfile
 from IsoNet.preprocessing.img_processing import normalize
@@ -261,11 +262,34 @@ class Net:
         self.model = torch.jit.load(path)
     
     def save(self, path):
-        state = self.model.state_dict()
-        torch.save(state, path)
+        model_to_save = self._unwrap_model(self.model)
+        torch.save(model_to_save.state_dict(), path)
+        self._save_encoder_decoder_states(model_to_save, path)
+
     def save_jit(self, path):
         model_scripted = torch.jit.script(self.model) # Export to TorchScript
         model_scripted.save(path) # Save
+
+    def _unwrap_model(self, model):
+        return model.module if isinstance(model, torch.nn.DataParallel) else model
+
+    def _save_encoder_decoder_states(self, model, path):
+        filename = os.path.basename(path)
+        match = re.match(r".*_iter(\d+)\.pth$", filename)
+        if match is None:
+            return
+        iter_suffix = match.group(1)
+        dirpath = os.path.dirname(path) or "."
+        self._save_submodule_state(model, "encoder", os.path.join(dirpath, f"encoder_iter{iter_suffix}.pth"))
+        self._save_submodule_state(model, "decoder", os.path.join(dirpath, f"decoder_iter{iter_suffix}.pth"))
+
+    def _save_submodule_state(self, model, attr, path):
+        if not hasattr(model, attr):
+            return
+        module = getattr(model, attr)
+        if module is None or not isinstance(module, torch.nn.Module):
+            return
+        torch.save(module.state_dict(), path)
 
     def train(self, data_path, gpuID=[0,1,2,3], learning_rate=3e-4, batch_size=None, epochs = 10, steps_per_epoch=200, acc_grad =False):
         if isinstance(self.model, ConvertedKerasUNet):
