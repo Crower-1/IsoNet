@@ -56,10 +56,10 @@ def run(args):
             #from IsoNet.models.unet.predict import predict
             #from IsoNet.models.unet.train import prepare_first_model, train_data
         from IsoNet.models.network import Net
-        if not hasattr(args, "metrics"):
-            network = Net()
-        else:
-            network = Net(args.metrics)
+        network = Net(
+            metrics=getattr(args, "metrics", None),
+            arch=getattr(args, "arch", "unet"),
+        )
 
         ###  find current iterations ###        
         current_iter = args.iter_count if hasattr(args, "iter_count") else 1
@@ -218,6 +218,9 @@ def run_whole(args):
     args.cube_size = md._data[0].rlnCubeSize
     args.predict_cropsize = args.crop_size
     args.residual = True
+    args.arch = (getattr(args, "arch", "unet") or "unet").lower()
+    if args.arch not in {"unet", "nnunet"}:
+        raise ValueError(f"Unsupported architecture '{args.arch}'. Supported options are 'unet' and 'nnunet'.")
     #*******calculate parameters********
     if args.gpuID is None:
         args.gpuID = '0,1,2,3'

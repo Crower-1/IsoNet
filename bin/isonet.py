@@ -372,7 +372,7 @@ class ISONET:
 
         ************************Network settings************************
 
-        :param arch: ("unet") Network architecture
+        :param arch: ("unet") Network architecture. Choose between "unet" and "nnunet".
         :param learning_rate: (0.0004) learning rate for network training.
         :param normalize_percentile: (True) Normalize the 5 percent and 95 percent pixel intensity to 0 and 1 respectively. If this is set to False, normalize the input to 0 mean and 1 standard dievation.
 
@@ -391,7 +391,7 @@ class ISONET:
         run(d_args)
 
     def predict(self, star_file: str, model: str, output_dir: str='./corrected_tomos', gpuID: str = None, cube_size:int=64,
-    crop_size:int=96,use_deconv_tomo=True, batch_size:int=None,normalize_percentile: bool=True,log_level: str="info", tomo_idx=None):
+    crop_size:int=96,use_deconv_tomo=True, batch_size:int=None,normalize_percentile: bool=True, arch: str="unet", log_level: str="info", tomo_idx=None):
         """
         \nPredict tomograms using trained model\n
         isonet.py predict star_file model [--gpuID] [--output_dir] [--cube_size] [--crop_size] [--batch_size] [--tomo_idx]
@@ -403,6 +403,7 @@ class ISONET:
         :param crop_size: (96) The side-length of cubes cropping from tomogram in an overlapping patch strategy, make this value larger if you see the patchy artifacts
         :param batch_size: The batch size of the cubes grouped into for network predicting, the default parameter is four times number of gpu
         :param normalize_percentile: (True) if normalize the tomograms by percentile. Should be the same with that in refine parameter.
+        :param arch: ("unet") Backbone used for inference. Choose "unet" or "nnunet" to match the checkpoint being loaded.
         :param log_level: ("debug") level of message to be displayed, could be 'info' or 'debug'
         :param tomo_idx: (None) If this value is set, process only the tomograms listed in this index. e.g. 1,2,4 or 5-10,15,16
         :param use_deconv_tomo: (True) If CTF deconvolved tomogram is found in tomogram.star, use that tomogram instead.
@@ -410,6 +411,7 @@ class ISONET:
         """
         d = locals()
         d_args = Arg(d)
+        d_args.arch = (getattr(d_args, "arch", "unet") or "unet").lower()
         from IsoNet.bin.predict import predict
 
         if d_args.log_level == "debug":

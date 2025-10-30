@@ -16,6 +16,9 @@ def predict(args):
         datefmt="%m-%d %H:%M:%S",level=logging.INFO,handlers=[logging.StreamHandler(sys.stdout)])
     logging.info('\n\n######Isonet starts predicting######\n')
 
+    args.arch = (getattr(args, "arch", "unet") or "unet").lower()
+    if args.arch not in {"unet", "nnunet"}:
+        raise ValueError(f"Unsupported architecture '{args.arch}'. Supported options are 'unet' and 'nnunet'.")
     args.gpuID = str(args.gpuID)
     args.ngpus = len(list(set(args.gpuID.split(','))))
     os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"
@@ -24,7 +27,7 @@ def predict(args):
     logger.info('gpuID:{}'.format(args.gpuID))
 
     from IsoNet.models.network import Net
-    network = Net()
+    network = Net(arch=args.arch)
     network.initialize()
     network.load(args.model)
 
@@ -54,4 +57,3 @@ def predict(args):
                 network.predict_tomo(args,tomo_file,output_file=tomo_out_name)
                 md._setItemValue(it,Label('rlnCorrectedTomoName'),tomo_out_name)
         md.write(args.star_file)
-

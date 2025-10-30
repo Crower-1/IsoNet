@@ -1,4 +1,5 @@
 from .unet import Unet
+from .nnUNet import NNUNet
 import torch
 import torch.nn.functional as F
 import os
@@ -201,13 +202,24 @@ class ConvertedKerasUNet(torch.nn.Module):
 
 
 class Net:
-    def __init__(self, metrics=None):
-    #    pass
+    def __init__(self, metrics=None, arch: str = "unet"):
+        #    pass
 
-    #def initialize(self):
-        self.model = Unet(metrics=metrics)
+        # def initialize(self):
+        self.arch = (arch or "unet").lower()
+        self._create_model(metrics=metrics)
         # self.model = self.model.to(memory_format=torch.channels_last)
-        #print(self.model)
+        # print(self.model)
+
+    def _create_model(self, metrics=None):
+        if self.arch in {"unet", "iso-unet", "isonet"}:
+            self.model = Unet(metrics=metrics)
+        elif self.arch in {"nnunet", "nn-unet", "nn_unet"}:
+            self.model = NNUNet()
+            if metrics is not None:
+                self.model.metrics = metrics
+        else:
+            raise ValueError(f"Unsupported architecture '{self.arch}'.")
 
     def initialize(self):
         """Maintain backward-compatible interface expected by callers."""
