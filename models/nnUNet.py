@@ -13,6 +13,7 @@ from typing import Sequence, Optional, Mapping, Any
 import torch
 from torch import nn
 from torch.nn import init as nn_init
+import torch.nn.functional as F
 
 from dynamic_network_architectures.architectures.unet import PlainConvUNet
 
@@ -114,6 +115,7 @@ class NNUNet(nn.Module):
 
         self.encoder = self.network.encoder
         self.decoder = self.network.decoder
+        self.required_multiples = self._compute_required_multiples(strides)
         self._replace_final_seg_layer(
             in_channels=features_per_stage[0],
             initialize=initialize_weights,
@@ -137,5 +139,33 @@ class NNUNet(nn.Module):
             if final_conv.bias is not None:
                 nn_init.constant_(final_conv.bias, 0.0)
 
+    @staticmethod
+    def _compute_required_multiples(strides: Sequence[Sequence[int]]) -> Sequence[int]:
+        totals = [1] * len(strides[0])
+        for stride in strides:
+            totals = [a * b for a, b in zip(totals, stride)]
+        return tuple(totals)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.network(x)
+        original_spatial = x.shape[2:]
+        pad_values: list[int] = []
+        needs_padding = False
+
+        for size, multiple in zip(reversed(original_spatial), reversed(self.required_multiples)):
+            remainder = size % multiple
+            pad_after = (multiple - remainder) % multiple
+            pad_values.extend([0, pad_after])
+            needs_padding = needs_padding or pad_after > 0
+
+        if needs_padding:
+            x = F.pad(x, pad_values)
+
+        out = self.network(x)
+
+        if needs_padding:
+            slices = [slice(None), slice(None)]
+            for size in original_spatial:
+                slices.append(slice(0, size))
+            out = out[tuple(slices)]
+
+        return out
