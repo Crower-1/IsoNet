@@ -338,7 +338,7 @@ class ISONET:
         prefill: bool = False,
         low_mem: bool = False,
 
-        use_wandb: bool = True,
+        use_wandb: bool = False,
         wandb_project: str = None,
         wandb_run_name: str = None,
         wandb_entity: str = None
