@@ -1,7 +1,10 @@
 from .unet import Unet
 import torch
 import torch.nn.functional as F
+import torch.distributed as dist
+import torch.multiprocessing as mp
 import os
+import math
 from .data_sequence import get_datasets, Predict_sets
 import mrcfile
 from IsoNet.preprocessing.img_processing import normalize
@@ -10,6 +13,197 @@ import logging
 from IsoNet.util.toTile import reform3D
 import sys
 from tqdm import tqdm
+import socket
+from contextlib import closing
+
+
+def _get_free_port():
+    with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as sock:
+        sock.bind(("", 0))
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        return sock.getsockname()[1]
+
+
+def _ddp_train_worker(
+    rank,
+    world_size,
+    model_state_dict,
+    data_path,
+    learning_rate,
+    batch_size,
+    epochs,
+    train_batches,
+    val_batches,
+    accumulate_steps,
+    metrics_store,
+):
+    logging.basicConfig(
+        format="%(asctime)s, %(levelname)-8s [rank %(process)d] %(message)s",
+        datefmt="%m-%d %H:%M:%S",
+        level=logging.INFO,
+    )
+
+    os.environ["RANK"] = str(rank)
+    os.environ["WORLD_SIZE"] = str(world_size)
+    os.environ["LOCAL_RANK"] = str(rank)
+
+    if not torch.cuda.is_available():
+        raise RuntimeError("DDP training requires CUDA-capable devices.")
+
+    torch.cuda.set_device(rank)
+    dist.init_process_group(backend="nccl", init_method="env://", rank=rank, world_size=world_size)
+
+    try:
+        net = Net()
+        net.model.load_state_dict(model_state_dict)
+
+        device = torch.device("cuda", rank)
+        model = net.model.to(device)
+        logging.info(
+            "[DDP] Rank %d/%d attached to device %d (%s)",
+            rank,
+            world_size,
+            torch.cuda.current_device(),
+            torch.cuda.get_device_name(torch.cuda.current_device()),
+        )
+        ddp_model = torch.nn.parallel.DistributedDataParallel(
+            model,
+            device_ids=[rank],
+            output_device=rank,
+            find_unused_parameters=False,
+        )
+
+        train_dataset, val_dataset = get_datasets(data_path)
+        per_device_batch = max(1, math.ceil(batch_size / world_size))
+        worker_count = min(per_device_batch, os.cpu_count() or 1)
+
+        train_sampler = torch.utils.data.distributed.DistributedSampler(
+            train_dataset,
+            num_replicas=world_size,
+            rank=rank,
+            shuffle=True,
+            drop_last=True,
+        )
+        val_sampler = torch.utils.data.distributed.DistributedSampler(
+            val_dataset,
+            num_replicas=world_size,
+            rank=rank,
+            shuffle=False,
+            drop_last=False,
+        )
+
+        train_loader = torch.utils.data.DataLoader(
+            train_dataset,
+            batch_size=per_device_batch,
+            sampler=train_sampler,
+            num_workers=worker_count,
+            pin_memory=True,
+            persistent_workers=True,
+            drop_last=True,
+        )
+        val_loader = torch.utils.data.DataLoader(
+            val_dataset,
+            batch_size=per_device_batch,
+            sampler=val_sampler,
+            num_workers=worker_count,
+            pin_memory=True,
+            persistent_workers=True,
+            drop_last=False,
+        )
+
+        optimizer = torch.optim.AdamW(ddp_model.parameters(), lr=learning_rate)
+        loss_fn = torch.nn.L1Loss()
+
+        train_batches_per_rank = max(1, math.ceil(train_batches / world_size))
+        val_batches_per_rank = max(1, math.ceil(val_batches / world_size))
+
+        train_losses = []
+        val_losses = []
+
+        for epoch in range(epochs):
+            train_sampler.set_epoch(epoch)
+
+            ddp_model.train()
+            running_loss = 0.0
+            processed_batches = 0
+            optimizer.zero_grad()
+            accumulation_counter = 0
+
+            for inputs, targets in train_loader:
+                inputs = inputs.to(device, non_blocking=True)
+                targets = targets.to(device, non_blocking=True)
+
+                outputs = ddp_model(inputs)
+                loss = loss_fn(outputs, targets)
+                running_loss += loss.item()
+
+                (loss / accumulate_steps).backward()
+                accumulation_counter += 1
+
+                if accumulation_counter == accumulate_steps:
+                    optimizer.step()
+                    optimizer.zero_grad()
+                    accumulation_counter = 0
+
+                processed_batches += 1
+                if processed_batches >= train_batches_per_rank:
+                    break
+
+            if accumulation_counter > 0:
+                optimizer.step()
+                optimizer.zero_grad()
+
+            train_stats = torch.tensor(
+                [running_loss, float(processed_batches)],
+                device=device,
+            )
+            dist.all_reduce(train_stats, op=dist.ReduceOp.SUM)
+            avg_train_loss = train_stats[0].item() / max(1.0, train_stats[1].item())
+
+            ddp_model.eval()
+            val_running_loss = 0.0
+            val_batches_processed = 0
+            with torch.no_grad():
+                for inputs, targets in val_loader:
+                    inputs = inputs.to(device, non_blocking=True)
+                    targets = targets.to(device, non_blocking=True)
+
+                    outputs = ddp_model(inputs)
+                    loss = loss_fn(outputs, targets)
+                    val_running_loss += loss.item()
+                    val_batches_processed += 1
+
+                    if val_batches_processed >= val_batches_per_rank:
+                        break
+
+            val_stats = torch.tensor(
+                [val_running_loss, float(val_batches_processed)],
+                device=device,
+            )
+            dist.all_reduce(val_stats, op=dist.ReduceOp.SUM)
+            avg_val_loss = val_stats[0].item() / max(1.0, val_stats[1].item())
+
+            if rank == 0:
+                train_losses.append(avg_train_loss)
+                val_losses.append(avg_val_loss)
+                logging.info(
+                    "Epoch %d: train_loss=%.6f, val_loss=%.6f",
+                    epoch + 1,
+                    avg_train_loss,
+                    avg_val_loss,
+                )
+
+        if rank == 0:
+            metrics_store["train_loss"] = train_losses
+            metrics_store["val_loss"] = val_losses
+            metrics_store["state_dict"] = {
+                key: value.cpu()
+                for key, value in ddp_model.module.state_dict().items()
+            }
+
+        dist.barrier()
+    finally:
+        dist.destroy_process_group()
 
 try:
     from torch.serialization import WeightsOnlyUnpicklingError
@@ -275,39 +469,61 @@ class Net:
         else:
             accumulate_steps = 1
 
-        train_dataset, val_dataset = get_datasets(data_path)
-        worker_count = min(batch_size, os.cpu_count() or 1)
-        train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True, persistent_workers=True,
-                                                num_workers=worker_count, pin_memory=True, drop_last=True)
-
-        val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=batch_size, shuffle=False, persistent_workers=True,
-                                                pin_memory=True, num_workers=worker_count, drop_last=True)
-
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.model.metrics.setdefault('train_loss', [])
+        self.model.metrics.setdefault('val_loss', [])
 
         available_gpu_ids = list(range(torch.cuda.device_count())) if torch.cuda.is_available() else []
         requested_gpu_ids = []
         if isinstance(gpuID, str):
-            requested_gpu_ids = [int(i) for i in gpuID.split(',') if i.strip().isdigit()]
+            requested_gpu_ids = [entry.strip() for entry in gpuID.split(',') if entry.strip()]
         elif isinstance(gpuID, (list, tuple)):
-            requested_gpu_ids = [int(i) for i in gpuID]
+            requested_gpu_ids = [str(entry) for entry in gpuID]
         elif isinstance(gpuID, int):
-            requested_gpu_ids = [gpuID]
+            requested_gpu_ids = [str(gpuID)]
 
-        if torch.cuda.is_available() and len(available_gpu_ids) > 0:
-            device_ids = list(range(len(available_gpu_ids))) if len(requested_gpu_ids) != 1 else [0]
-        else:
-            device_ids = []
+        world_size = len(requested_gpu_ids) if requested_gpu_ids else len(available_gpu_ids)
+        world_size = min(world_size, len(available_gpu_ids))
 
+        if torch.cuda.is_available() and world_size > 1:
+            logging.info("Using DistributedDataParallel across %d CUDA devices", world_size)
+            return self._train_ddp(
+                world_size=world_size,
+                data_path=data_path,
+                learning_rate=learning_rate,
+                batch_size=batch_size,
+                epochs=epochs,
+                train_batches=train_batches,
+                val_batches=val_batches,
+                accumulate_steps=accumulate_steps,
+            )
+
+        train_dataset, val_dataset = get_datasets(data_path)
+        worker_count = min(batch_size, os.cpu_count() or 1)
+        train_loader = torch.utils.data.DataLoader(
+            train_dataset,
+            batch_size=batch_size,
+            shuffle=True,
+            persistent_workers=True,
+            num_workers=worker_count,
+            pin_memory=True,
+            drop_last=True,
+        )
+
+        val_loader = torch.utils.data.DataLoader(
+            val_dataset,
+            batch_size=batch_size,
+            shuffle=False,
+            persistent_workers=True,
+            pin_memory=True,
+            num_workers=worker_count,
+            drop_last=True,
+        )
+
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         model = self.model.to(device)
-        if torch.cuda.is_available() and len(device_ids) > 1:
-            model = torch.nn.DataParallel(model, device_ids=device_ids)
 
         optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
         loss_fn = torch.nn.L1Loss()
-
-        self.model.metrics.setdefault('train_loss', [])
-        self.model.metrics.setdefault('val_loss', [])
 
         for epoch in range(epochs):
             model.train()
@@ -316,7 +532,7 @@ class Net:
             optimizer.zero_grad()
             accumulation_counter = 0
 
-            for batch_idx, (inputs, targets) in enumerate(train_loader):
+            for inputs, targets in train_loader:
                 inputs = inputs.to(device, non_blocking=True)
                 targets = targets.to(device, non_blocking=True)
 
@@ -347,7 +563,7 @@ class Net:
             val_running_loss = 0.0
             val_batches_processed = 0
             with torch.no_grad():
-                for batch_idx, (inputs, targets) in enumerate(val_loader):
+                for inputs, targets in val_loader:
                     inputs = inputs.to(device, non_blocking=True)
                     targets = targets.to(device, non_blocking=True)
 
@@ -361,14 +577,90 @@ class Net:
             avg_val_loss = val_running_loss / max(1, val_batches_processed)
             self.model.metrics['val_loss'].append(avg_val_loss)
 
-            logging.info("Epoch %d: train_loss=%.6f, val_loss=%.6f", epoch + 1, avg_train_loss, avg_val_loss)
+            logging.info(
+                "Epoch %d: train_loss=%.6f, val_loss=%.6f",
+                epoch + 1,
+                avg_train_loss,
+                avg_val_loss,
+            )
 
-        if isinstance(model, torch.nn.DataParallel):
-            self.model = model.module
-        else:
-            self.model = model
+        self.model = model
 
         return self.model.metrics
+
+    def _train_ddp(
+        self,
+        world_size,
+        data_path,
+        learning_rate,
+        batch_size,
+        epochs,
+        train_batches,
+        val_batches,
+        accumulate_steps,
+    ):
+        try:
+            mp.set_start_method("spawn", force=False)
+        except RuntimeError:
+            pass
+
+        model_state_dict = {
+            key: value.cpu()
+            for key, value in self.model.state_dict().items()
+        }
+
+        manager = mp.Manager()
+        metrics_store = manager.dict()
+
+        previous_master_addr = os.environ.get("MASTER_ADDR")
+        previous_master_port = os.environ.get("MASTER_PORT")
+
+        os.environ["MASTER_ADDR"] = previous_master_addr or "127.0.0.1"
+        os.environ["MASTER_PORT"] = str(_get_free_port())
+
+        try:
+            mp.spawn(
+                _ddp_train_worker,
+                args=(
+                    world_size,
+                    model_state_dict,
+                    data_path,
+                    learning_rate,
+                    batch_size,
+                    epochs,
+                    train_batches,
+                    val_batches,
+                    accumulate_steps,
+                    metrics_store,
+                ),
+                nprocs=world_size,
+                join=True,
+            )
+        finally:
+            if previous_master_addr is not None:
+                os.environ["MASTER_ADDR"] = previous_master_addr
+            else:
+                os.environ.pop("MASTER_ADDR", None)
+
+            if previous_master_port is not None:
+                os.environ["MASTER_PORT"] = previous_master_port
+            else:
+                os.environ.pop("MASTER_PORT", None)
+
+        try:
+            train_losses = list(metrics_store.get("train_loss", []))
+            val_losses = list(metrics_store.get("val_loss", []))
+            state_dict = metrics_store.get("state_dict")
+
+            if state_dict is not None:
+                self.model.load_state_dict(state_dict)
+
+            self.model.metrics['train_loss'].extend(train_losses)
+            self.model.metrics['val_loss'].extend(val_losses)
+
+            return self.model.metrics
+        finally:
+            manager.shutdown()
 
     def predict(self, mrc_list, result_dir, iter_count):    
 

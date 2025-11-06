@@ -3,7 +3,7 @@ import logging
 global logger 
 logger = logging.getLogger('main')
 logger.setLevel(logging.INFO)
-global refine_param, predict_param, extract_param, param_to_check, param_to_set_attr
+global refine_param, predict_param, extract_param, param_to_check, param_to_set_attr, bool_params
 refine_param = [ 'normalize_percentile', 'batch_normalization', 'filter_base', 'unet_depth', 'pool', 'kernel', 'convs_per_depth', 'drop_out','noise_dir', 
                 'noise_mode', 'noise_pause', 'noise_start_iter','learning_rate', 'noise_level', 'steps_per_epoch', 'batch_size', 'epochs', 'continue_from', 
                 'preprocessing_ncpus', 'result_dir', 'continue_iter', 'log_level', 'pretrained_model', 'data_dir', 'iterations', 'gpuID', 'subtomo_star','cmd',
@@ -16,6 +16,7 @@ prepare_star_param = ['number_subtomos', 'defocus', 'pixel_size', 'output_star',
 prepare_subtomo_star_param = ['folder_name', 'output_star', 'pixel_size', 'cube_size']
 param_to_check = refine_param + predict_param + extract_param + ['self','run']
 param_to_set_attr = refine_param + predict_param + extract_param + ['iter_count','crop_size','cube_size','predict_cropsize','noise_dir','lr','ngpus','predict_batch_size','losses','metrics']
+bool_params = {'normalize_percentile','remove_intermediate','prefill','low_mem','use_wandb','use_deconv_tomo'}
 class Arg:
     def __init__(self,dictionary,from_cmd=True):
         for k, v in dictionary.items():
@@ -28,6 +29,12 @@ class Arg:
                 v = tuple([v])
             if k == 'noise_level' and type(v) in [int,float]:
                 v = tuple([v])
+            if k in bool_params and isinstance(v, str):
+                low_v = v.strip().lower()
+                if low_v in ['true','t','1','yes','y']:
+                    v = True
+                elif low_v in ['false','f','0','no','n']:
+                    v = False
             if k in param_to_set_attr:
                 setattr(self, k, v)
          

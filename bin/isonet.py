@@ -348,7 +348,7 @@ class ISONET:
         \ntrain neural network to correct missing wedge\n
         isonet.py refine subtomo_star [--iterations] [--gpuID] [--preprocessing_ncpus] [--batch_size] [--steps_per_epoch] [--noise_start_iter] [--noise_level]...
         :param subtomo_star: (None) star file containing subtomogram(s).
-        :param gpuID: (0,1,2,3) The ID of gpu to be used during the training. e.g 0,1,2,3.
+        :param gpuID: (0,1,2,3) Comma separated GPU identifiers used for refinement. Multiple IDs enable DistributedDataParallel training.
         :param pretrained_model: (None) A trained neural network model in ".h5" format to start with.
         :param iterations: (30) Number of training iterations.
         :param data_dir: (data) Temperary folder to save the generated data used for training.
@@ -360,7 +360,7 @@ class ISONET:
         ************************Training settings************************
 
         :param epochs: (10) Number of epoch for each iteraction.
-        :param batch_size: (None) Size of the minibatch.If None, batch_size will be the max(2 * number_of_gpu,4). batch_size should be divisible by the number of gpu.
+        :param batch_size: (None) Size of the minibatch.If None, batch_size will be the max(2 * number_of_gpu,4). The value is treated as the global batch size and is automatically split across DDP ranks.
         :param steps_per_epoch: (None) Step per epoch. If not defined, the default value will be min(num_of_subtomograms * 8 / batch_size , 200)
 
         ************************Denoise settings************************
