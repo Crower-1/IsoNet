@@ -201,7 +201,12 @@ def _ddp_train_worker(
                 for key, value in ddp_model.module.state_dict().items()
             }
 
-        dist.barrier()
+        # Explicitly tell NCCL which device this rank uses to suppress PyTorch's
+        # "No device id provided" warning when TORCH_NCCL_ASYNC_ERROR_HANDLING=1.
+        if device.type == "cuda":
+            dist.barrier(device_ids=[device.index])
+        else:
+            dist.barrier()
     finally:
         dist.destroy_process_group()
 
