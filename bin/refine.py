@@ -173,14 +173,15 @@ def run(args):
             plot_metrics(metrics, args.result_dir+"/losses.png")
 
             if wandb_run is not None:
-                _log_wandb_artifacts(
-                    wandb_module,
-                    wandb_run,
-                    iteration=num_iter,
-                    model_paths=[pth_path],
-                    metrics_image=os.path.join(args.result_dir, "losses.png"),
-                    step=wandb_epoch_offset,
-                )
+                # _log_wandb_artifacts(
+                #     wandb_module,
+                #     wandb_run,
+                #     iteration=num_iter,
+                #     model_paths=[pth_path],
+                #     metrics_image=os.path.join(args.result_dir, "losses.png"),
+                #     step=wandb_epoch_offset,
+                # )
+                pass
             logging.info("Done training!")
 
             ### for last iteration predict subtomograms ###
